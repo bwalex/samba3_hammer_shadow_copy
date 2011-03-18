@@ -1,11 +1,69 @@
-./configure --prefix=/usr/local --with-samba-source=/home/sjg/projects/samba/source3
-gmake
-gmake install
+Getting and installing latest SAMBA source
+-----------------------------------------------
 
-...
+# cd /home/repos && git clone git://git.samba.org/samba.git samba
+# cd samba && ./configure --prefix=/usr/local
+# gmake && gmake install
 
-Install on Windows Client (if necessary)
-  XP SP2 / Server 2003
-    http://technet.microsoft.com/en-us/library/bb809101.aspx
+Now basic configuration for samba:
 
+# cat > /usr/local/etc/smb.conf < EOF
+[global]
+   workgroup = WORKGROUP
+   server string = Samba Server
+   security = user
+   hosts allow = 192.168. 10. 127.
+   log file = /usr/local/samba/var/log.%m
+   max log size = 50000
+   load printers = no
+
+   vfs objects = hammer_shadow_copy
+
+# Backend to store user information in. New installations should
+# use either tdbsam or ldapsam. smbpasswd is available for backwards
+# compatibility. tdbsam requires no further configuration.
+;   passdb backend = tdbsam
+
+#============================ Share Definitions ==============================
+[homes]
+   comment = Home Directories
+   browseable = no
+   writable = yes
+
+# A publicly accessible directory, read/write to all users. Note that all files
+# created in the directory by users will be owned by the default user, so
+# any user with access can delete any other user's files. Obviously this
+# directory must be writable by the default user. Another user could of course
+# be specified, in which case all files would be owned by that user instead.
+;[public]
+;   path = /usr/somewhere/else/public
+;   public = yes
+;   only guest = yes
+;   writable = yes
+;   printable = no
+EOF
+
+To start samba:
+# /usr/local/sbin/smbd -s /usr/local/etc/smb.conf -d 9
+# /usr/local/sbin/nmbd -s /usr/local/etc/smb.conf -d 9
+
+* To stop it simply killall both processes.
+# killall nmbd smbd
+
+Hammer shadow copy module
+----------------------------------------------
+
+# cd /home/repos && git clone git://github.com/thesjg/samba3_hammer_shadow_copy.git smbshadow
+# cd smbshadow
+# ./configure --prefix=/usr/local --with-samba-source=/home/repos/samba/source3 # (Do not forget source3 dir)
+# gmake
+# gmake install
+
+After installing the module, restart samba.
+
+
+NOTE: In Windows XP you need to install Shadow Copies client, check URLs below:
+
+	http://technet.microsoft.com/en-us/library/bb809101.aspx
+	http://www.microsoft.com/downloads/en/details.aspx?FamilyId=E382358F-33C3-4DE7-ACD8-A33AC92D295E&displaylang=en
 
