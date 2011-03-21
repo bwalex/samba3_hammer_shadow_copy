@@ -123,26 +123,40 @@ fail:
 
 #define HAMMER_GMT_LABEL_PREFIX		"@GMT-"
 #define HAMMER_GMT_LABEL_FORMAT		"@GMT-%Y.%m.%d-%H.%M.%S"
+/* @GMT-2011.01.01-14.30.50" <- 24 bytes */
+#define HAMMER_GMT_LABEL_LENGTH     24
+#define HAMMER_TID_LABEL_LENGTH     20
 
 static
 char *
-hammer_match_gmt(const char *name)
+hammer_match_gmt(const char *name, struct tm *tm)
 {
-    unsigned year, month, day, hour, min, sec;
+    int year, month, day, hour, min, sec;
     char *ret = NULL;
 
-syslog(LOG_CRIT, "HAMMER: hammer_match_gmt: %s", name);
+    syslog(LOG_CRIT, "HAMMER: hammer_match_gmt: %s", name);
 
     ret = strnstr(name, HAMMER_GMT_LABEL_PREFIX, strlen(name));
     if (ret == NULL)
         return (NULL);
 
-    if (sscanf(ret, "@GMT-%04u.%02u.%02u-%02u.%02u.%02u",
+    if (sscanf(ret, "@GMT-%04d.%02d.%02d-%02d.%02d.%02d",
         &year, &month, &day, &hour, &min, &sec) != 6)
     {
+        syslog(LOG_CRIT, "HAMMER: sscanf GMT-foo ok");
         return (NULL);
     }
 
+    if (tm != NULL) {
+        syslog(LOG_CRIT, "HAMMER: tm != NULL: %d, %d, %d, %d, %d, %d", sec, min, hour, day, month, year);
+        memset(tm, 0, sizeof(struct tm));
+        tm->tm_sec = sec;
+        tm->tm_min = min;
+        tm->tm_hour = hour;
+        tm->tm_mday = day;
+        tm->tm_mon = month - 1; /* in 0-11 format */
+        tm->tm_year = year - 1900; /* years since 1900 */
+    }
     return (ret);
 }
 
@@ -150,20 +164,29 @@ static
 char *
 hammer_replace_gmt_tid(const char *path, hammer_tid_t tid)
 {
-    char *offset, *ret = NULL;
+    char *offset, *ptr, *ret = NULL;
 
-syslog(LOG_CRIT, "HAMMER: hammer_replace_gmt_tid: ent: %s", path);
-
-    ret = talloc_strdup(talloc_tos(), path);
-    offset = hammer_match_gmt(ret);
+    syslog(LOG_CRIT, "HAMMER: hammer_replace_gmt_tid: ent: %s", path);
+    ret = talloc_size(talloc_tos(), strlen(path)+1);
+    offset = hammer_match_gmt(path, NULL);
     if (offset != NULL) {
-        int i = strlen(offset);
-        snprintf(offset, 20+1, "@@0x%016jx", (uintmax_t)tid);
-        strncpy(offset + 20, offset + 24, i - 24);
-        offset[i-4] = '\0';
+        syslog(LOG_CRIT, "HAMMER:  hammer_replace_gmt_tid: off != NULL: %s", offset);
+        int i = strlen(offset); /* Path starting at GMT-* */
+        int blen = path-offset; /* Length of path before GMT-* */
+        ptr = ret;
+
+        strncpy(ptr, offset, blen); /* Copy path before GMT-* */
+        ptr += blen;
+
+        snprintf(ptr, HAMMER_TID_LABEL_LENGTH+1, "@@0x%016jx",
+                 (uintmax_t)tid);
+        ptr += HAMMER_TID_LABEL_LENGTH;
+
+        strncpy(ptr, offset + HAMMER_GMT_LABEL_LENGTH,
+                i - HAMMER_GMT_LABEL_LENGTH + 1);
     }
 
-syslog(LOG_CRIT, "HAMMER: hammer_replace_gmt_tid: exit: %s", ret);
+    syslog(LOG_CRIT, "HAMMER: hammer_replace_gmt_tid: ret: %s", ret);
 
     return (ret);
 }
@@ -174,24 +197,65 @@ hammer_strip_gmt(const char *path)
 {
     char *offset, *ret = NULL;
 
-syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: ent: %s", path);
+    syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: ent: %s", path);
 
     ret = talloc_strdup(talloc_tos(), path);
-    offset = hammer_match_gmt(ret);
+    offset = hammer_match_gmt(ret, NULL);
     if (offset != NULL) {
-        if (strlen(offset) == 24) {
-syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: offset is 24 (pure GMT)");
+        syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: offset != NULL: %s", offset);
+        if (strlen(offset) == HAMMER_GMT_LABEL_LENGTH) {
+            syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: offset is 24 (pure GMT)");
             ret = ".";
             return (ret);
         }
 
-        strncpy(offset, offset + 25, strlen(offset) - 25);
-        offset[strlen(offset)-25] = '\0'; 
-   }
+        strncpy(offset, offset + (HAMMER_GMT_LABEL_LENGTH + 1),
+                strlen(offset) - (HAMMER_GMT_LABEL_LENGTH + 1));
+        offset[strlen(offset)-(HAMMER_GMT_LABEL_LENGTH + 1)] = '\0'; 
+    }
 
-syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: ex: %s", ret);
+    syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: ex: %s", ret);
 
     return (ret);
+}
+
+static
+int
+hammer_translate_gmt_to_tid(struct smb_filename *smb_fname)
+{
+    struct tm tm;
+    time_t gm_time;
+    hammer_snapshots_t snapshots;
+    hammer_snapshot_t snapshot;
+    char *s, *g, *cwd;
+
+    g = hammer_match_gmt(smb_fname->base_name, &tm);
+    if (g == NULL)
+        return -1;
+
+    syslog(LOG_CRIT, "HAMMER: hammer_stat: basename: %s", smb_fname->base_name);
+    s = hammer_strip_gmt(smb_fname->base_name);
+    syslog(LOG_CRIT, "HAMMER: hammer_stat: getting snapshots: %s", s);
+    snapshots = hammer_get_snapshots(talloc_tos(), s);
+    if (snapshots == NULL) {
+        syslog(LOG_CRIT, "HAMMER: hammer_stat: no snapshots!");
+        return -1;
+    }
+
+    gm_time = timegm(&tm);
+
+    TAILQ_FOREACH(snapshot, &snapshots->snaps, snap) {
+        time_t t = snapshot->ts / 1000000ULL;
+        syslog(LOG_CRIT, "HAMMER: hammer_stat: (samba time) %d vs %d (snapshot time)", gm_time, t);
+        if (t == gm_time) {
+            syslog(LOG_CRIT, "HAMMER: hammer_stat: t == gm_time");
+            smb_fname->base_name = hammer_replace_gmt_tid(smb_fname->base_name,
+                                                          snapshot->tid);
+            return 0;
+        }
+    }
+
+    return -1;
 }
 
 static
@@ -206,6 +270,7 @@ static
 int
 hammer_lstat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
 {
+    hammer_translate_gmt_to_tid(smb_fname);
     return (SMB_VFS_NEXT_LSTAT(handle, smb_fname));
 }
 
@@ -213,47 +278,14 @@ static
 int
 hammer_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
 {
-    int ret = SMB_VFS_NEXT_STAT(handle, smb_fname);
-    char *l = NULL;
-    hammer_snapshots_t snapshots;
-    hammer_snapshot_t snapshot;
-    char *s, *g, *cwd;
+    char *cwd;
 
-cwd = getcwd(NULL, MAXPATHLEN);
-syslog(LOG_CRIT, "HAMMER: hammer_stat, cwd is: %s", cwd);
+    cwd = getcwd(NULL, MAXPATHLEN);
+    syslog(LOG_CRIT, "HAMMER: hammer_stat, cwd is: %s", cwd);
 
-    g = hammer_match_gmt(smb_fname->base_name);
-    if (g != NULL) {
-        int i = 0;
+    hammer_translate_gmt_to_tid(smb_fname);
 
-        s = hammer_strip_gmt(smb_fname->base_name);
-syslog(LOG_CRIT, "HAMMER: hammer_stat: getting snapshots: %s", s);
-        snapshots = hammer_get_snapshots(talloc_tos(), s);
-        if (snapshots == NULL) {
-syslog(LOG_CRIT, "HAMMER: hammer_stat: FAILED getting snapshots: %s", s);
-            return (ret);
-        }
-syslog(LOG_CRIT, "HAMMER: hammer_stat: got %d snapshots", snapshots->count);
-
-        TAILQ_FOREACH(snapshot, &snapshots->snaps, snap) {
-            time_t t = snapshot->ts / 1000000ULL;
-            struct tm *tp = gmtime(&t);
-            char tlabel[100];
-
-syslog(LOG_CRIT, "LOOP ITER XXX: %d", i++);
-            strftime(&tlabel[0], sizeof(tlabel), HAMMER_GMT_LABEL_FORMAT, tp);
-syslog(LOG_CRIT, "HAMMER: trying label %s against %s", tlabel, g);
-            if (strncmp(g, tlabel, 24) == 0) {
-                smb_fname->base_name = hammer_replace_gmt_tid(smb_fname->base_name,
-                                                              snapshot->tid);
-syslog(LOG_CRIT, "HAMMER: changed base_name to: %s", smb_fname->base_name);
-                ret = SMB_VFS_NEXT_STAT(handle, smb_fname);
-                break;
-            }
-        }
-    }
-
-    return (ret);
+    return (SMB_VFS_NEXT_STAT(handle, smb_fname));
 }
 
 static
@@ -261,6 +293,7 @@ int
 hammer_open(vfs_handle_struct *handle, struct smb_filename *smb_fname,
             files_struct *fsp, int flags, mode_t mode)
 {
+    hammer_translate_gmt_to_tid(smb_fname);
     return (SMB_VFS_NEXT_OPEN(handle, smb_fname, fsp, flags, mode));
 }
 
