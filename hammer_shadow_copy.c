@@ -141,12 +141,10 @@ hammer_match_gmt(const char *name, struct tm *tm)
     if (sscanf(ret, "@GMT-%04d.%02d.%02d-%02d.%02d.%02d",
         &year, &month, &day, &hour, &min, &sec) != 6)
     {
-        syslog(LOG_CRIT, "HAMMER: sscanf GMT-foo ok");
         return (NULL);
     }
 
     if (tm != NULL) {
-        syslog(LOG_CRIT, "HAMMER: tm != NULL: %d, %d, %d, %d, %d, %d", sec, min, hour, day, month, year);
         memset(tm, 0, sizeof(struct tm));
         tm->tm_sec = sec;
         tm->tm_min = min;
@@ -184,7 +182,7 @@ hammer_replace_gmt_tid(const char *path, hammer_tid_t tid)
                 i - HAMMER_GMT_LABEL_LENGTH + 1);
     }
 
-    //syslog(LOG_CRIT, "HAMMER: hammer_replace_gmt_tid: ret: %s", ret);
+    syslog(LOG_CRIT, "HAMMER: hammer_replace_gmt_tid: %s => %s", path, ret);
 
     return (ret);
 }
@@ -212,7 +210,7 @@ hammer_strip_gmt(const char *path)
         offset[strlen(offset)-(HAMMER_GMT_LABEL_LENGTH + 1)] = '\0';
     }
 
-    //syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: ex: %s", ret);
+    syslog(LOG_CRIT, "HAMMER: hammer_strip_gmt: %s => %s", path, ret);
 
     return (ret);
 }
@@ -233,10 +231,10 @@ hammer_translate_gmt_to_tid(char *fname)
 
     //syslog(LOG_CRIT, "HAMMER: hammer_stat: basename: %s", fname);
     s = hammer_strip_gmt(fname);
-    //syslog(LOG_CRIT, "HAMMER: hammer_stat: getting snapshots: %s", s);
+    syslog(LOG_CRIT, "HAMMER: hammer_stat: getting snapshots: %s", s);
     snapshots = hammer_get_snapshots(talloc_tos(), s);
     if (snapshots == NULL) {
-        //syslog(LOG_CRIT, "HAMMER: hammer_stat: no snapshots!");
+        syslog(LOG_CRIT, "HAMMER: hammer_stat: no snapshots!");
         return fname;
     }
 
@@ -263,6 +261,20 @@ hammer_translate_gmt_to_tid(char *fname)
                 return ret;                                           \
         } while (0)
 
+#define _SHADOW_NEXT_SMB_FNAME(op, args, rtype, err, fn) do {         \
+		char *orig = smb_fname->base_name;                    \
+                rtype ret;                                            \
+                char *match = hammer_match_gmt(smb_fname->base_name, NULL); \
+                smb_fname->base_name = hammer_translate_gmt_to_tid(smb_fname->base_name); \
+                syslog(LOG_CRIT, "HAMMER: samba vfs " #op " %s => %s", orig, smb_fname->base_name); \
+		ret = SMB_VFS_NEXT_ ## op args;                       \
+		syslog(LOG_CRIT, "HAMMER: samba vfs " #op " match: %s, ret: %d", match, ret); \
+		if (match != NULL && (ret != err)) {                  \
+			fn;                                           \
+		}                                                     \
+                return ret;                                           \
+        } while (0)
+
 #define SHADOW_NEXT_SMB_FNAME(op, args, rtype) do {                   \
 		char *orig = smb_fname->base_name;                    \
                 rtype ret;                                            \
@@ -273,27 +285,67 @@ hammer_translate_gmt_to_tid(char *fname)
         } while (0)
 
 
+
+
+/*
+  simple string hash
+ */
+static uint32 string_hash(const char *s)
+{
+        uint32 n = 0;
+	while (*s) {
+                n = ((n << 5) + n) ^ (uint32)(*s++);
+        }
+        return n;
+}
+
+/*
+  modify a sbuf return to ensure that inodes in the shadow directory
+  are different from those in the main directory
+ */
+static void convert_sbuf(vfs_handle_struct *handle, const char *fname, SMB_STRUCT_STAT *sbuf)
+{
+	syslog(LOG_CRIT, "HAMMER samba convert_sbuf!!");
+		uint32_t shash = string_hash(fname) & 0xFF000000;
+		if (shash == 0) {
+			shash = 1;
+		}
+		sbuf->st_ex_ino ^= shash;
+}
+
+
+
+
+
 static
 int
 hammer_fstat(vfs_handle_struct *handle, files_struct *fsp,
              SMB_STRUCT_STAT *sbuf)
 {
-    return (SMB_VFS_NEXT_FSTAT(handle, fsp, sbuf));
+    int ret = SMB_VFS_NEXT_FSTAT(handle, fsp, sbuf);
+
+    syslog(LOG_CRIT, "HAMMER: samba vfs FSTAT %s", fsp->fsp_name->base_name);
+    if (ret == 0 && hammer_match_gmt(fsp->fsp_name->base_name, NULL))
+        convert_sbuf(handle, fsp->fsp_name->base_name, sbuf);
+    return ret;
 }
 
 static
 int
 hammer_lstat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
 {
-    SHADOW_NEXT_SMB_FNAME(LSTAT, (handle, smb_fname), int);
+    _SHADOW_NEXT_SMB_FNAME(LSTAT, (handle, smb_fname), int, -1,
+			   convert_sbuf(handle, smb_fname->base_name,
+					&smb_fname->st));
 }
 
 static
 int
 hammer_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
 {
-    char *cwd;
-    SHADOW_NEXT_SMB_FNAME(STAT, (handle, smb_fname), int);
+    _SHADOW_NEXT_SMB_FNAME(STAT, (handle, smb_fname), int, -1,
+			   convert_sbuf(handle, smb_fname->base_name,
+					&smb_fname->st));
 }
 
 static
