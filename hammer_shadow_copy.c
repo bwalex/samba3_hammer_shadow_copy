@@ -48,6 +48,124 @@ typedef struct hammer_snapshots {
     TAILQ_HEAD(, hammer_snapshot)	snaps;
 } *hammer_snapshots_t;
 
+
+typedef struct hammer_history_entry {
+	hammer_tid_t	tid;
+	u_int32_t	time32;
+	TAILQ_ENTRY(hammer_history_entry)	entry;
+} *hammer_history_entry_t;
+
+TAILQ_HEAD(hammer_history_list, hammer_history);
+typedef struct hammer_history {
+	u_int32_t	count;
+	TAILQ_HEAD(, hammer_history_entry)	hist;
+} *hammer_history_t;
+
+
+/*
+ * Return a human-readable timestamp (XXX: remove later!)
+ */
+static const char *
+timestr32(u_int32_t time32)
+{
+	static char timebuf[64];
+	time_t t = (time_t)time32;
+	struct tm *tp;
+
+	tp = localtime(&t);
+	strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S", tp);
+	return(timebuf);
+}
+
+static
+void
+hammer_free_history(hammer_history_t hist)
+{
+	hammer_history_entry_t entry;
+
+	if (hist == NULL)
+		return;
+
+	while ((entry = TAILQ_FIRST(&hist->hist)) != NULL) {
+		--hist->count;
+		TAILQ_REMOVE(&hist->hist, entry, entry);
+		free(entry);
+	}
+	free(hist);
+}
+
+static
+hammer_history_t
+hammer_get_history(const char *path, off_t end_tid)
+{
+	struct hammer_ioc_history hist;
+	hammer_history_t ret_history;
+	const char *status;
+	int fd;
+	int i;
+
+	//printf("%s\t", path);
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		printf("%s\n", strerror(errno));
+		return NULL;
+	}
+	bzero(&hist, sizeof(hist));
+	hist.beg_tid = HAMMER_MIN_TID;
+	hist.end_tid = end_tid; //HAMMER_MAX_TID;
+
+	if (ioctl(fd, HAMMERIOC_GETHISTORY, &hist) < 0) {
+		printf("%s\n", strerror(errno));
+		close(fd);
+		return NULL;
+	}
+	status = ((hist.head.flags & HAMMER_IOC_HISTORY_UNSYNCED) ?
+		 "dirty" : "clean");
+	//printf("%016jx \t(count=%d) {\n", (uintmax_t)hist.obj_id, hist.count);
+
+	ret_history = (hammer_history_t)malloc(sizeof(*ret_history));
+	if (ret_history == NULL)
+		return NULL;
+
+	TAILQ_INIT(&ret_history->hist);
+	ret_history->count = 0;
+
+	for (;;) {
+		for (i = 0; i < hist.count; ++i) {
+			char *hist_path = NULL;
+			hammer_history_entry_t ret_entry;
+
+			ret_entry = (hammer_history_entry_t)malloc(sizeof(*ret_entry));
+			if (ret_entry == NULL)
+				goto fail;
+			ret_entry->tid = hist.hist_ary[i].tid;
+			ret_entry->time32 = hist.hist_ary[i].time32;
+			++ret_history->count;
+			TAILQ_INSERT_HEAD(&ret_history->hist, ret_entry, entry);
+		}
+		if (hist.head.flags & HAMMER_IOC_HISTORY_EOF)
+			break;
+		if (hist.head.flags & HAMMER_IOC_HISTORY_NEXT_KEY)
+			break;
+		if ((hist.head.flags & HAMMER_IOC_HISTORY_NEXT_TID) == 0)
+			break;
+		hist.beg_tid = hist.nxt_tid;
+		if (ioctl(fd, HAMMERIOC_GETHISTORY, &hist) < 0) {
+			//printf("    error: %s\n", strerror(errno));
+			break;
+		}
+	}
+	//printf("}\n");
+	close(fd);
+
+	return ret_history;
+
+fail:
+	/* XXX deallocate */
+	hammer_free_history(ret_history);
+	return NULL;
+}
+
 static
 void
 hammer_free_snapshots(hammer_snapshots_t snapshots)
@@ -287,17 +405,6 @@ hammer_translate_gmt_to_tid(char *fname)
 
 
 
-/*
-  simple string hash
- */
-static uint32 string_hash(const char *s)
-{
-        uint32 n = 0;
-	while (*s) {
-                n = ((n << 5) + n) ^ (uint32)(*s++);
-        }
-        return n;
-}
 
 /*
   modify a sbuf return to ensure that inodes in the shadow directory
@@ -305,16 +412,31 @@ static uint32 string_hash(const char *s)
  */
 static void convert_sbuf(vfs_handle_struct *handle, const char *fname, SMB_STRUCT_STAT *sbuf)
 {
-	syslog(LOG_CRIT, "HAMMER samba convert_sbuf!!");
-		uint32_t shash = string_hash(fname) & 0xFF000000;
-		if (shash == 0) {
-			shash = 1;
-		}
-		sbuf->st_ex_ino ^= shash;
+    hammer_history_t hist;
+    hammer_history_entry_t entry;
+    char *ptr;
+    off_t tid;
+
+    syslog(LOG_CRIT, "HAMMER samba convert_sbuf!!");
+
+    ptr = strstr(fname, "@@0x");
+    if (ptr == NULL)
+        return;
+
+    ptr+=2;
+    tid = strtoll(ptr, NULL, 0);
+    syslog(LOG_CRIT, "HAMMER samba convert_sbuf (ptr=%s, tid=%jx)", ptr, tid);
+    hist = hammer_get_history(fname, tid);
+    if (hist != NULL) {
+        entry = TAILQ_FIRST(&hist->hist);
+        syslog(LOG_CRIT, "HAMMER samba: Got best entry: %#jx (%s), now hacking mtime and atime\n", entry->tid, timestr32(entry->time32));
+	sbuf->st_ex_atime.tv_sec = entry->time32;
+	sbuf->st_ex_atime.tv_nsec = 0;
+	sbuf->st_ex_mtime.tv_sec = entry->time32;
+	sbuf->st_ex_mtime.tv_nsec = 0;
+        hammer_free_history(hist);
+    }
 }
-
-
-
 
 
 static
@@ -388,6 +510,16 @@ hammer_readlink(vfs_handle_struct *handle, const char *path,
     SHADOW_NEXT(READLINK, (handle, cpath, buf, bufsiz), int);
 }
 
+
+static
+char *
+hammer_realpath(vfs_handle_struct *handle, const char *path, char *resolved_path)
+{
+    SHADOW_NEXT(REALPATH, (handle, cpath, resolved_path), char *);
+}
+
+
+
 static
 int
 hammer_get_shadow_copy_data(vfs_handle_struct *handle, files_struct *fsp,
@@ -449,6 +581,7 @@ static struct vfs_fn_pointers hammer_shadow_copy_fns = {
     .chdir = hammer_chdir,
     .statvfs = hammer_statvfs,
     .vfs_readlink = hammer_readlink,
+    .realpath = hammer_realpath,
     .get_shadow_copy_data = hammer_get_shadow_copy_data
 };
 
