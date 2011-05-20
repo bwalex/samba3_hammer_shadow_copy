@@ -1,4 +1,26 @@
 /*
+ * HAMMER shadow copy implementation that utilizes the file system's native
+ * snapshot support. This is based on the original shadow copy module from
+ * 2004, the onefs shadow copy module and the new shadow copy2 module.
+ *
+ * Copyright (C) Samuel J. Greear      2011
+ * Copyright (C) Alex Hornung          2011
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
+/*
  * The rough manner in which shadow copies work (at least from the perspective
  * of this module) is as follows. When you traverse to the "Previous Versions"
  * tab in the properties menu in the Windows Explorer shell, the
