@@ -514,6 +514,24 @@ hammer_realpath(vfs_handle_struct *handle, const char *path, char *resolved_path
 
 static
 int
+hammer_ntimes(vfs_handle_struct *handle,
+              const struct smb_filename *smb_fname_in,
+              struct smb_file_time *ft)
+{
+    struct smb_filename *smb_fname = NULL;
+    NTSTATUS status;
+
+    status = copy_smb_filename(talloc_tos(), smb_fname_in, &smb_fname);
+    if (!NT_STATUS_IS_OK(status)) {
+        errno = map_errno_from_nt_status(status);
+        return -1;
+    }
+
+    SHADOW_NEXT_SMB_FNAME(NTIMES, (handle, smb_fname, ft), int);
+}
+
+static
+int
 hammer_get_shadow_copy_data(vfs_handle_struct *handle, files_struct *fsp,
                             SHADOW_COPY_DATA *shadow_copy_data, bool labels)
 {
@@ -531,12 +549,12 @@ hammer_get_shadow_copy_data(vfs_handle_struct *handle, files_struct *fsp,
         return (error);
     }
 
-syslog(LOG_CRIT, "HAMMER: Got %d snapshots for file/dir", snapshots->count);
+    syslog(LOG_CRIT, "HAMMER: Got %d snapshots for file/dir", snapshots->count);
     shadow_copy_data->num_volumes = snapshots->count;
     error = 0;
 
     if (labels) {
-syslog(LOG_CRIT, "Filling labels");
+    syslog(LOG_CRIT, "Filling labels");
         SHADOW_COPY_LABEL *rlabels = TALLOC_ZERO_ARRAY(shadow_copy_data->mem_ctx,
            SHADOW_COPY_LABEL, snapshots->count);
         if (rlabels == NULL)
@@ -555,8 +573,8 @@ syslog(LOG_CRIT, "Filling labels");
         shadow_copy_data->labels = rlabels;
     }
 
-syslog(LOG_CRIT, "HAMMER: Filled %d labels", filled_labels);
-syslog(LOG_CRIT, "HAMMER: Found %d snapshots", shadow_copy_data->num_volumes);
+    syslog(LOG_CRIT, "HAMMER: Filled %d labels", filled_labels);
+    syslog(LOG_CRIT, "HAMMER: Found %d snapshots", shadow_copy_data->num_volumes);
 
 done:
     hammer_free_snapshots(snapshots);
@@ -574,6 +592,8 @@ static struct vfs_fn_pointers hammer_shadow_copy_fns = {
     .statvfs = hammer_statvfs,
     .vfs_readlink = hammer_readlink,
     .realpath = hammer_realpath,
+    .ntimes = hammer_ntimes,
+    /* XXX: readdir? */
     .get_shadow_copy_data = hammer_get_shadow_copy_data
 };
 
