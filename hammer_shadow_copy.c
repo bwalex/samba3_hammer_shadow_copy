@@ -39,26 +39,26 @@ typedef struct hammer_snapshot {
     hammer_tid_t        tid;
     u_int64_t           ts;
     char                label[64];
-    TAILQ_ENTRY(hammer_snapshot)	snap;
+    TAILQ_ENTRY(hammer_snapshot) snap;
 } *hammer_snapshot_t;
 
 TAILQ_HEAD(hammer_snapshots_list, hammer_snapshot);
 typedef struct hammer_snapshots {
-    u_int32_t				count;
-    TAILQ_HEAD(, hammer_snapshot)	snaps;
+    u_int32_t                      count;
+    TAILQ_HEAD(, hammer_snapshot)  snaps;
 } *hammer_snapshots_t;
 
 
 typedef struct hammer_history_entry {
-	hammer_tid_t	tid;
-	u_int32_t	time32;
-	TAILQ_ENTRY(hammer_history_entry)	entry;
+    hammer_tid_t	tid;
+    u_int32_t	time32;
+    TAILQ_ENTRY(hammer_history_entry)  entry;
 } *hammer_history_entry_t;
 
 TAILQ_HEAD(hammer_history_list, hammer_history);
 typedef struct hammer_history {
-	u_int32_t	count;
-	TAILQ_HEAD(, hammer_history_entry)	hist;
+    u_int32_t	count;
+    TAILQ_HEAD(, hammer_history_entry) hist;
 } *hammer_history_t;
 
 
@@ -68,102 +68,103 @@ typedef struct hammer_history {
 static const char *
 timestr32(u_int32_t time32)
 {
-	static char timebuf[64];
-	time_t t = (time_t)time32;
-	struct tm *tp;
+    static char timebuf[64];
+    time_t t = (time_t)time32;
+    struct tm *tp;
 
-	tp = localtime(&t);
-	strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S", tp);
-	return(timebuf);
+    tp = localtime(&t);
+    strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S", tp);
+    return(timebuf);
 }
 
 static
 void
 hammer_free_history(hammer_history_t hist)
 {
-	hammer_history_entry_t entry;
+    hammer_history_entry_t entry;
 
-	if (hist == NULL)
-		return;
+    if (hist == NULL)
+        return;
 
-	while ((entry = TAILQ_FIRST(&hist->hist)) != NULL) {
-		--hist->count;
-		TAILQ_REMOVE(&hist->hist, entry, entry);
-		free(entry);
-	}
-	free(hist);
+    while ((entry = TAILQ_FIRST(&hist->hist)) != NULL) {
+        --hist->count;
+        TAILQ_REMOVE(&hist->hist, entry, entry);
+        free(entry);
+    }
+
+    free(hist);
 }
 
 static
 hammer_history_t
 hammer_get_history(const char *path, off_t end_tid)
 {
-	struct hammer_ioc_history hist;
-	hammer_history_t ret_history;
-	const char *status;
-	int fd;
-	int i;
+    struct hammer_ioc_history hist;
+    hammer_history_t ret_history;
+    const char *status;
+    int fd;
+    int i;
 
-	//printf("%s\t", path);
-	fd = open(path, O_RDONLY);
-	if (fd < 0) {
-		printf("%s\n", strerror(errno));
-		return NULL;
-	}
-	bzero(&hist, sizeof(hist));
-	hist.beg_tid = HAMMER_MIN_TID;
-	hist.end_tid = end_tid; //HAMMER_MAX_TID;
+    //printf("%s\t", path);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        printf("%s\n", strerror(errno));
+        return NULL;
+    }
+    bzero(&hist, sizeof(hist));
+    hist.beg_tid = HAMMER_MIN_TID;
+    hist.end_tid = end_tid; //HAMMER_MAX_TID;
 
-	if (ioctl(fd, HAMMERIOC_GETHISTORY, &hist) < 0) {
-		printf("%s\n", strerror(errno));
-		close(fd);
-		return NULL;
-	}
-	status = ((hist.head.flags & HAMMER_IOC_HISTORY_UNSYNCED) ?
-		 "dirty" : "clean");
-	//printf("%016jx \t(count=%d) {\n", (uintmax_t)hist.obj_id, hist.count);
+    if (ioctl(fd, HAMMERIOC_GETHISTORY, &hist) < 0) {
+        printf("%s\n", strerror(errno));
+        close(fd);
+        return NULL;
+    }
+    status = ((hist.head.flags & HAMMER_IOC_HISTORY_UNSYNCED) ?
+        "dirty" : "clean");
+    //printf("%016jx \t(count=%d) {\n", (uintmax_t)hist.obj_id, hist.count);
 
-	ret_history = (hammer_history_t)malloc(sizeof(*ret_history));
-	if (ret_history == NULL)
-		return NULL;
+    ret_history = (hammer_history_t)malloc(sizeof(*ret_history));
+    if (ret_history == NULL)
+        return NULL;
 
-	TAILQ_INIT(&ret_history->hist);
-	ret_history->count = 0;
+    TAILQ_INIT(&ret_history->hist);
+    ret_history->count = 0;
 
-	for (;;) {
-		for (i = 0; i < hist.count; ++i) {
-			char *hist_path = NULL;
-			hammer_history_entry_t ret_entry;
+    for (;;) {
+        for (i = 0; i < hist.count; ++i) {
+            char *hist_path = NULL;
+            hammer_history_entry_t ret_entry;
 
-			ret_entry = (hammer_history_entry_t)malloc(sizeof(*ret_entry));
-			if (ret_entry == NULL)
-				goto fail;
-			ret_entry->tid = hist.hist_ary[i].tid;
-			ret_entry->time32 = hist.hist_ary[i].time32;
-			++ret_history->count;
-			TAILQ_INSERT_HEAD(&ret_history->hist, ret_entry, entry);
-		}
-		if (hist.head.flags & HAMMER_IOC_HISTORY_EOF)
-			break;
-		if (hist.head.flags & HAMMER_IOC_HISTORY_NEXT_KEY)
-			break;
-		if ((hist.head.flags & HAMMER_IOC_HISTORY_NEXT_TID) == 0)
-			break;
-		hist.beg_tid = hist.nxt_tid;
-		if (ioctl(fd, HAMMERIOC_GETHISTORY, &hist) < 0) {
-			//printf("    error: %s\n", strerror(errno));
-			break;
-		}
-	}
-	//printf("}\n");
-	close(fd);
+            ret_entry = (hammer_history_entry_t)malloc(sizeof(*ret_entry));
+            if (ret_entry == NULL)
+                goto fail;
+            ret_entry->tid = hist.hist_ary[i].tid;
+            ret_entry->time32 = hist.hist_ary[i].time32;
+            ++ret_history->count;
+            TAILQ_INSERT_HEAD(&ret_history->hist, ret_entry, entry);
+        }
+        if (hist.head.flags & HAMMER_IOC_HISTORY_EOF)
+            break;
+        if (hist.head.flags & HAMMER_IOC_HISTORY_NEXT_KEY)
+            break;
+        if ((hist.head.flags & HAMMER_IOC_HISTORY_NEXT_TID) == 0)
+            break;
+        hist.beg_tid = hist.nxt_tid;
+        if (ioctl(fd, HAMMERIOC_GETHISTORY, &hist) < 0) {
+            //printf("    error: %s\n", strerror(errno));
+            break;
+        }
+    }
+    //printf("}\n");
+    close(fd);
 
-	return ret_history;
+    return ret_history;
 
 fail:
-	/* XXX deallocate */
-	hammer_free_history(ret_history);
-	return NULL;
+    /* XXX deallocate */
+    hammer_free_history(ret_history);
+    return NULL;
 }
 
 static
@@ -373,38 +374,34 @@ hammer_translate_gmt_to_tid(char *fname)
 #define SHADOW_NEXT(op, args, rtype) do {                             \
                 char *cpath = NULL;                                   \
                 rtype ret;                                            \
-	        cpath = hammer_translate_gmt_to_tid(path);            \
-	        syslog(LOG_CRIT, "HAMMER: samba vfs " #op " %s => %s", path, cpath); \
+                cpath = hammer_translate_gmt_to_tid(path);            \
+                syslog(LOG_CRIT, "HAMMER: samba vfs " #op " %s => %s", path, cpath); \
                 ret = SMB_VFS_NEXT_ ## op args;                       \
                 return ret;                                           \
         } while (0)
 
 #define _SHADOW_NEXT_SMB_FNAME(op, args, rtype, err, fn) do {         \
-		char *orig = smb_fname->base_name;                    \
+                char *orig = smb_fname->base_name;                    \
                 rtype ret;                                            \
                 char *match = hammer_match_gmt(smb_fname->base_name, NULL); \
                 smb_fname->base_name = hammer_translate_gmt_to_tid(smb_fname->base_name); \
                 syslog(LOG_CRIT, "HAMMER: samba vfs " #op " %s => %s", orig, smb_fname->base_name); \
-		ret = SMB_VFS_NEXT_ ## op args;                       \
-		syslog(LOG_CRIT, "HAMMER: samba vfs " #op " match: %s, ret: %d", match, ret); \
-		if (match != NULL && (ret != err)) {                  \
-			fn;                                           \
-		}                                                     \
+                ret = SMB_VFS_NEXT_ ## op args;                       \
+                syslog(LOG_CRIT, "HAMMER: samba vfs " #op " match: %s, ret: %d", match, ret); \
+                if (match != NULL && (ret != err)) {                  \
+                    fn;                                               \
+                }                                                     \
                 return ret;                                           \
         } while (0)
 
 #define SHADOW_NEXT_SMB_FNAME(op, args, rtype) do {                   \
-		char *orig = smb_fname->base_name;                    \
+                char *orig = smb_fname->base_name;                    \
                 rtype ret;                                            \
                 smb_fname->base_name = hammer_translate_gmt_to_tid(smb_fname->base_name); \
                 syslog(LOG_CRIT, "HAMMER: samba vfs " #op " %s => %s", orig, smb_fname->base_name); \
-		ret = SMB_VFS_NEXT_ ## op args;                       \
+                ret = SMB_VFS_NEXT_ ## op args;                       \
                 return ret;                                           \
         } while (0)
-
-
-
-
 
 /*
   modify a sbuf return to ensure that inodes in the shadow directory
@@ -430,14 +427,13 @@ static void convert_sbuf(vfs_handle_struct *handle, const char *fname, SMB_STRUC
     if (hist != NULL) {
         entry = TAILQ_FIRST(&hist->hist);
         syslog(LOG_CRIT, "HAMMER samba: Got best entry: %#jx (%s), now hacking mtime and atime\n", entry->tid, timestr32(entry->time32));
-	sbuf->st_ex_atime.tv_sec = entry->time32;
-	sbuf->st_ex_atime.tv_nsec = 0;
-	sbuf->st_ex_mtime.tv_sec = entry->time32;
-	sbuf->st_ex_mtime.tv_nsec = 0;
+        sbuf->st_ex_atime.tv_sec = entry->time32;
+        sbuf->st_ex_atime.tv_nsec = 0;
+        sbuf->st_ex_mtime.tv_sec = entry->time32;
+        sbuf->st_ex_mtime.tv_nsec = 0;
         hammer_free_history(hist);
     }
 }
-
 
 static
 int
@@ -457,8 +453,8 @@ int
 hammer_lstat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
 {
     _SHADOW_NEXT_SMB_FNAME(LSTAT, (handle, smb_fname), int, -1,
-			   convert_sbuf(handle, smb_fname->base_name,
-					&smb_fname->st));
+        convert_sbuf(handle, smb_fname->base_name,
+        &smb_fname->st));
 }
 
 static
@@ -466,8 +462,8 @@ int
 hammer_stat(vfs_handle_struct *handle, struct smb_filename *smb_fname)
 {
     _SHADOW_NEXT_SMB_FNAME(STAT, (handle, smb_fname), int, -1,
-			   convert_sbuf(handle, smb_fname->base_name,
-					&smb_fname->st));
+        convert_sbuf(handle, smb_fname->base_name,
+        &smb_fname->st));
 }
 
 static
@@ -475,7 +471,6 @@ int
 hammer_open(vfs_handle_struct *handle, struct smb_filename *smb_fname,
             files_struct *fsp, int flags, mode_t mode)
 {
-
     SHADOW_NEXT_SMB_FNAME(OPEN, (handle, smb_fname, fsp, flags, mode), int);
 }
 
@@ -490,7 +485,7 @@ hammer_opendir(vfs_handle_struct *handle, const char *path, const char *mask,
 static
 int
 hammer_statvfs(struct vfs_handle_struct *handle, const char *path,
-	       struct vfs_statvfs_struct *statbuf)
+               struct vfs_statvfs_struct *statbuf)
 {
     SHADOW_NEXT(STATVFS, (handle, cpath, statbuf), int);
 }
@@ -505,11 +500,10 @@ hammer_chdir(vfs_handle_struct *handle, const char *path)
 static
 int
 hammer_readlink(vfs_handle_struct *handle, const char *path,
-		char *buf, size_t bufsiz)
+                char *buf, size_t bufsiz)
 {
     SHADOW_NEXT(READLINK, (handle, cpath, buf, bufsiz), int);
 }
-
 
 static
 char *
@@ -517,8 +511,6 @@ hammer_realpath(vfs_handle_struct *handle, const char *path, char *resolved_path
 {
     SHADOW_NEXT(REALPATH, (handle, cpath, resolved_path), char *);
 }
-
-
 
 static
 int
